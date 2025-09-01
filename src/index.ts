@@ -15,8 +15,6 @@ const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1';
 
 const AVAILABLE_MODELS = [
   { id: 'google/gemini-2.5-flash-image-preview', name: 'Gemini 2.5 Flash Image Preview', description: 'Google Gemini image generation model' },
-  { id: 'google/gemini-2.5-flash-image-preview:free', name: 'Gemini 2.5 Flash Image Preview (Free)', description: 'Google Gemini image generation model - free tier' },
-  { id: 'openai/dall-e-3', name: 'DALL-E 3', description: 'OpenAI DALL-E 3 image generation' },
 ];
 
 const IMAGE_SIZES = [
