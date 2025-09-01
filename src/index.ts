@@ -35,6 +35,7 @@ interface ImageGenerationArgs {
   style?: 'vivid' | 'natural';
   save_to_file?: boolean;
   filename?: string;
+  show_full_response?: boolean;
 }
 
 interface ImageAnalysisArgs {
@@ -136,6 +137,11 @@ class OpenRouterImageServer {
                 type: 'string',
                 description: 'Base filename for saved images (without extension)',
               },
+              show_full_response: {
+                type: 'boolean',
+                description: 'Show full response including base64 data (default: false)',
+                default: false,
+              },
             },
             required: ['prompt'],
           },
@@ -222,7 +228,8 @@ class OpenRouterImageServer {
       quality = 'standard',
       style = 'vivid',
       save_to_file = false,
-      filename
+      filename,
+      show_full_response = false
     } = args;
 
     try {
@@ -304,23 +311,55 @@ class OpenRouterImageServer {
           savedFile = savedFiles[0] || null;
         }
 
+        // Prepare response based on show_full_response option
+        const responseData: any = {
+          success: true,
+          model: model,
+          prompt: prompt,
+          message: content || 'Image generated successfully',
+        };
+
+        // Add image info
+        if (imageUrl) {
+          if (imageUrl.startsWith('data:image')) {
+            if (show_full_response) {
+              // Include full base64 data when requested
+              responseData.image = {
+                type: 'base64',
+                data: imageUrl,
+                size: `${Math.round(imageUrl.length / 1024)}KB`,
+                format: imageUrl.substring(11, imageUrl.indexOf(';')) || 'unknown'
+              };
+            } else {
+              // Default: concise info without the actual data
+              responseData.image = {
+                type: 'base64',
+                size: `${Math.round(imageUrl.length / 1024)}KB`,
+                format: imageUrl.substring(11, imageUrl.indexOf(';')) || 'unknown'
+              };
+            }
+          } else {
+            responseData.image = {
+              type: 'url',
+              url: imageUrl
+            };
+          }
+        }
+
+        if (savedFile) {
+          responseData.saved_to = savedFile;
+        }
+
+        responseData.usage = {
+          tokens: data.usage?.total_tokens || 0,
+          model: data.model
+        };
+
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify({
-                success: true,
-                model: model,
-                prompt: prompt,
-                image_url: imageUrl,
-                saved_file: savedFile,
-                raw_response: content,
-                metadata: {
-                  usage: data.usage,
-                  model: data.model,
-                  id: data.id,
-                },
-              }, null, 2),
+              text: JSON.stringify(responseData, null, 2),
             },
           ],
         };
@@ -373,25 +412,54 @@ class OpenRouterImageServer {
           savedFiles = await this.saveImages(imageInputs, filename || 'generated_image');
         }
 
-        const images = data.data.map((img: any, index: number) => ({
-          url: img.url || (img.b64_json ? `data:image/png;base64,${img.b64_json}` : null),
-          revised_prompt: img.revised_prompt,
-          saved_file: savedFiles[index] || null,
-        }));
+        // Prepare response for DALL-E based on show_full_response option
+        const responseData: any = {
+          success: true,
+          model: model,
+          prompt: prompt,
+          images_generated: data.data.length,
+          images: []
+        };
+
+        data.data.forEach((img: any, index: number) => {
+          const imageInfo: any = {
+            index: index + 1,
+          };
+
+          if (img.revised_prompt) {
+            imageInfo.revised_prompt = img.revised_prompt;
+          }
+
+          if (img.b64_json) {
+            imageInfo.type = 'base64';
+            imageInfo.size = `${Math.round(img.b64_json.length / 1024)}KB`;
+            // Include full base64 data only when requested
+            if (show_full_response) {
+              imageInfo.data = `data:image/png;base64,${img.b64_json}`;
+            }
+          } else if (img.url) {
+            imageInfo.type = 'url';
+            imageInfo.url = img.url;
+          }
+
+          if (savedFiles[index]) {
+            imageInfo.saved_to = savedFiles[index];
+          }
+
+          responseData.images.push(imageInfo);
+        });
+
+        if (data.usage) {
+          responseData.usage = {
+            tokens: data.usage.total_tokens || 0
+          };
+        }
 
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify({
-                success: true,
-                model: model,
-                images: images,
-                metadata: {
-                  created: data.created,
-                  usage: data.usage,
-                },
-              }, null, 2),
+              text: JSON.stringify(responseData, null, 2),
             },
           ],
         };

@@ -83,6 +83,7 @@ Generate images using AI models.
 - `style`: Style for DALL-E 3 (`vivid` or `natural`)
 - `save_to_file`: Save images locally (default: false)
 - `filename`: Base filename for saved images
+- `show_full_response`: Include full base64 data in response (default: false, returns concise info only)
 
 **Example:**
 ```json
