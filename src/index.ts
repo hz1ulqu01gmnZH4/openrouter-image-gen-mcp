@@ -14,7 +14,9 @@ const __dirname = dirname(__filename);
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1';
 
 const AVAILABLE_MODELS = [
-  { id: 'google/gemini-2.5-flash-image-preview', name: 'Gemini 2.5 Flash Image Preview', description: 'Google Gemini image generation model' }
+  { id: 'google/gemini-2.5-flash-image-preview', name: 'Gemini 2.5 Flash Image Preview', description: 'Google Gemini image generation model' },
+  { id: 'google/gemini-2.5-flash-image-preview:free', name: 'Gemini 2.5 Flash Image Preview (Free)', description: 'Google Gemini image generation model - free tier' },
+  { id: 'openai/dall-e-3', name: 'DALL-E 3', description: 'OpenAI DALL-E 3 image generation' },
 ];
 
 const IMAGE_SIZES = [
@@ -262,23 +264,35 @@ class OpenRouterImageServer {
         }
 
         const data = await response.json() as any;
-        const content = data.choices[0].message.content;
+        const message = data.choices[0].message;
+        const content = message.content || '';
         
-        // Extract image URL from the response if it contains one
-        // The response might be a URL or base64 data
+        // Extract image URL from the response
         let imageUrl: string | null = null;
         
-        // Check if content is a URL
-        if (content.startsWith('http')) {
+        // Check if the message has images array (Gemini format)
+        if (message.images && message.images.length > 0) {
+          const firstImage = message.images[0];
+          if (firstImage.image_url && firstImage.image_url.url) {
+            imageUrl = firstImage.image_url.url;
+          }
+        }
+        // Fallback: Check if content is a URL
+        else if (content.startsWith('http')) {
           imageUrl = content;
         } else if (content.startsWith('data:image')) {
           // It's base64 data
           imageUrl = content;
-        } else {
-          // Try to extract URL from markdown or text
-          const urlMatch = content.match(/https?:\/\/[^\s]+/);
-          if (urlMatch) {
-            imageUrl = urlMatch[0];
+        } else if (content.includes('http') || content.includes('![')) {
+          // Try to extract URL from markdown
+          const markdownMatch = content.match(/!\[.*?\]\((https?:\/\/[^\s\)]+)\)/);
+          if (markdownMatch) {
+            imageUrl = markdownMatch[1];
+          } else {
+            const urlMatch = content.match(/https?:\/\/[^\s]+/);
+            if (urlMatch) {
+              imageUrl = urlMatch[0];
+            }
           }
         }
         
