@@ -45,6 +45,15 @@ interface ImageAnalysisArgs {
   max_tokens?: number;
 }
 
+type ImageInput = {
+  url?: string; // http(s) URL or data URL
+  b64_json?: string; // DALL-E style base64 (no data: prefix)
+  base64?: string; // generic base64 (optionally with data: prefix)
+  bytes?: ArrayBuffer | Uint8Array | Buffer;
+  mimeType?: string; // optional hint
+  contentType?: string; // optional hint
+};
+
 class OpenRouterImageServer {
   private server: Server;
   private apiKey: string | undefined;
@@ -275,7 +284,11 @@ class OpenRouterImageServer {
         
         let savedFile: string | null = null;
         if (save_to_file && imageUrl) {
-          const savedFiles = await this.saveImages([{ url: imageUrl }], filename || 'generated_image');
+          // Handle both regular URLs and base64 data
+          const imageInput: ImageInput = imageUrl.startsWith('data:') || imageUrl.startsWith('http') 
+            ? { url: imageUrl }
+            : { base64: imageUrl }; // Assume it's raw base64 if not a URL
+          const savedFiles = await this.saveImages([imageInput], filename || 'generated_image');
           savedFile = savedFiles[0] || null;
         }
 
@@ -336,11 +349,20 @@ class OpenRouterImageServer {
         
         let savedFiles: string[] = [];
         if (save_to_file && data.data) {
-          savedFiles = await this.saveImages(data.data, filename || 'generated_image');
+          // Convert DALL-E response to ImageInput format
+          const imageInputs: ImageInput[] = data.data.map((img: any) => {
+            if (img.b64_json) {
+              return { b64_json: img.b64_json };
+            } else if (img.url) {
+              return { url: img.url };
+            }
+            return {};
+          });
+          savedFiles = await this.saveImages(imageInputs, filename || 'generated_image');
         }
 
         const images = data.data.map((img: any, index: number) => ({
-          url: img.url,
+          url: img.url || (img.b64_json ? `data:image/png;base64,${img.b64_json}` : null),
           revised_prompt: img.revised_prompt,
           saved_file: savedFiles[index] || null,
         }));
@@ -464,28 +486,116 @@ class OpenRouterImageServer {
     };
   }
 
-  private async saveImages(images: any[], baseFilename: string): Promise<string[]> {
+  private async saveImages(images: ImageInput[], baseFilename: string): Promise<string[]> {
     const savedFiles: string[] = [];
     const outputDir = path.join(process.cwd(), 'generated_images');
-    
     await fs.mkdir(outputDir, { recursive: true });
 
     for (let i = 0; i < images.length; i++) {
       const image = images[i];
-      if (image.url) {
-        const response = await fetch(image.url);
-        const buffer = await response.arrayBuffer();
-        
-        const timestamp = Date.now();
-        const filename = `${baseFilename}_${timestamp}_${i + 1}.png`;
+      try {
+        const { buffer, ext } = await this.resolveImageBufferAndExt(image);
+
+        const safeBase = this.sanitizeFilePart(baseFilename || 'generated_image');
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const filename = `${safeBase}_${timestamp}_${i + 1}.${ext}`;
         const filepath = path.join(outputDir, filename);
-        
-        await fs.writeFile(filepath, Buffer.from(buffer));
+
+        await fs.writeFile(filepath, buffer);
         savedFiles.push(filepath);
+        console.error(`Saved image to: ${filepath}`);
+      } catch (err) {
+        console.error(`Failed to save image #${i + 1}:`, err);
       }
     }
 
     return savedFiles;
+  }
+
+  private async resolveImageBufferAndExt(image: ImageInput): Promise<{ buffer: Buffer; ext: string }> {
+    let buffer: Buffer | undefined;
+    let mime: string | undefined;
+    let ext: string | undefined;
+
+    if (image.url) {
+      if (image.url.startsWith('data:')) {
+        const parsed = this.parseDataUrl(image.url);
+        buffer = parsed.buffer;
+        mime = parsed.mime;
+      } else {
+        const res = await fetch(image.url);
+        if (!res.ok) {
+          throw new Error(`Failed to fetch ${image.url}: ${res.status} ${res.statusText}`);
+        }
+        const arr = await res.arrayBuffer();
+        buffer = Buffer.from(arr);
+        mime = res.headers.get('content-type') ?? undefined;
+        // Try to infer extension from URL if content-type is missing
+        ext = this.extFromUrl(image.url) ?? undefined;
+      }
+    } else if (image.b64_json || image.base64) {
+      const b64 = (image.b64_json ?? image.base64)!.replace(/^data:.*;base64,/, '');
+      buffer = Buffer.from(b64, 'base64');
+      mime = image.mimeType ?? image.contentType;
+    } else if (image.bytes) {
+      if (Buffer.isBuffer(image.bytes)) {
+        buffer = image.bytes;
+      } else if (image.bytes instanceof ArrayBuffer) {
+        buffer = Buffer.from(image.bytes);
+      } else if (image.bytes instanceof Uint8Array) {
+        buffer = Buffer.from(image.bytes);
+      }
+      mime = image.mimeType ?? image.contentType;
+    }
+
+    if (!buffer) throw new Error('No image data found');
+
+    const resolvedExt = this.mimeToExt(mime) ?? ext ?? 'png';
+    return { buffer, ext: resolvedExt };
+  }
+
+  private parseDataUrl(dataUrl: string): { buffer: Buffer; mime?: string } {
+    const m = dataUrl.match(/^data:([^;,]+)?(;base64)?,(.*)$/i);
+    if (!m) throw new Error('Invalid data URL');
+    const mime = m[1];
+    const isBase64 = !!m[2];
+    const data = m[3];
+    const buffer = isBase64
+      ? Buffer.from(data, 'base64')
+      : Buffer.from(decodeURIComponent(data), 'utf8');
+    return { buffer, mime };
+  }
+
+  private mimeToExt(m?: string | null): string | undefined {
+    if (!m) return undefined;
+    const clean = m.split(';')[0].trim().toLowerCase();
+    const map: Record<string, string> = {
+      'image/png': 'png',
+      'image/jpeg': 'jpg',
+      'image/jpg': 'jpg',
+      'image/webp': 'webp',
+      'image/gif': 'gif',
+      'image/bmp': 'bmp',
+      'image/tiff': 'tiff',
+      'image/avif': 'avif',
+      'image/svg+xml': 'svg'
+    };
+    return map[clean];
+  }
+
+  private extFromUrl(u: string): string | undefined {
+    try {
+      const ext = path.extname(new URL(u).pathname).slice(1).toLowerCase();
+      const allowed = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'tiff', 'svg', 'ico', 'avif'];
+      if (!ext || !allowed.includes(ext)) return undefined;
+      return ext === 'jpeg' ? 'jpg' : ext;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private sanitizeFilePart(s: string): string {
+    return s.replace(/[^a-z0-9_\-]+/gi, '_').slice(0, 64);
   }
 
   async run() {
