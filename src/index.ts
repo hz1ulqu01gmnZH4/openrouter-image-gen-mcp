@@ -13,7 +13,7 @@ const __dirname = dirname(__filename);
 
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1';
 
-const GEMINI_MODEL = 'google/gemini-2.0-flash-exp';
+const GEMINI_MODEL = 'google/gemini-2.5-flash-image-preview';
 
 interface ImageGenerationArgs {
   prompt: string;
@@ -275,7 +275,7 @@ class GeminiImageServer {
           type: 'text',
           text: `Available Gemini Image Generation Model:
 • ${GEMINI_MODEL}
-  Google Gemini 2.0 Flash Experimental - Advanced image generation model
+  Google Gemini 2.5 Flash Image Preview - Latest image generation model
 
 Note: Image style, aspect ratio, and composition are controlled through descriptive text in your prompt.
 

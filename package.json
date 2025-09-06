@@ -1,7 +1,7 @@
 {
   "name": "gemini-image-gen-mcp",
   "version": "1.0.0",
-  "description": "MCP server for image generation using Google Gemini 2.0 Flash model via OpenRouter API",
+  "description": "MCP server for image generation using Google Gemini 2.5 Flash Image Preview model via OpenRouter API",
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
