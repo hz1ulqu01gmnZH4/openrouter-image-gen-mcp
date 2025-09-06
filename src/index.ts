@@ -13,37 +13,13 @@ const __dirname = dirname(__filename);
 
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1';
 
-const AVAILABLE_MODELS = [
-  { id: 'google/gemini-2.5-flash-image-preview', name: 'Gemini 2.5 Flash Image Preview', description: 'Google Gemini image generation model' },
-];
-
-const IMAGE_SIZES = [
-  '256x256',
-  '512x512',
-  '1024x1024',
-  '1536x1536',
-  '1792x1024',
-  '1024x1792'
-];
+const GEMINI_MODEL = 'google/gemini-2.0-flash-exp';
 
 interface ImageGenerationArgs {
-  model: string;
   prompt: string;
-  n?: number;
-  size?: string;
-  quality?: 'standard' | 'hd';
-  style?: 'vivid' | 'natural';
   save_to_file?: boolean;
   filename?: string;
   show_full_response?: boolean;
-}
-
-interface ImageAnalysisArgs {
-  model: string;
-  image_url?: string;
-  image_path?: string;
-  prompt: string;
-  max_tokens?: number;
 }
 
 type ImageInput = {
@@ -55,14 +31,14 @@ type ImageInput = {
   contentType?: string; // optional hint
 };
 
-class OpenRouterImageServer {
+class GeminiImageServer {
   private server: Server;
   private apiKey: string | undefined;
 
   constructor() {
     this.server = new Server(
       {
-        name: 'openrouter-image-gen-mcp',
+        name: 'gemini-image-gen-mcp',
         version: '1.0.0',
       },
       {
@@ -89,53 +65,22 @@ class OpenRouterImageServer {
       tools: [
         {
           name: 'generate_image',
-          description: 'Generate images using OpenRouter API (Gemini 2.5 Flash, DALL-E 3, etc.)',
+          description: 'Generate images using Google Gemini API. Control image style, aspect ratio, and composition through descriptive text in your prompt.',
           inputSchema: {
             type: 'object',
             properties: {
-              model: {
-                type: 'string',
-                description: 'Model ID for image generation',
-                enum: AVAILABLE_MODELS.filter(m => m.id.includes('gemini') || m.id.includes('dall-e')).map(m => m.id),
-                default: 'google/gemini-2.5-flash-image-preview:free',
-              },
               prompt: {
                 type: 'string',
-                description: 'Text description of the image to generate',
-              },
-              n: {
-                type: 'number',
-                description: 'Number of images to generate (1-4)',
-                default: 1,
-                minimum: 1,
-                maximum: 4,
-              },
-              size: {
-                type: 'string',
-                description: 'Size of the generated image',
-                enum: IMAGE_SIZES,
-                default: '1024x1024',
-              },
-              quality: {
-                type: 'string',
-                description: 'Quality of the image (DALL-E 3 only)',
-                enum: ['standard', 'hd'],
-                default: 'standard',
-              },
-              style: {
-                type: 'string',
-                description: 'Style of the image (DALL-E 3 only)',
-                enum: ['vivid', 'natural'],
-                default: 'vivid',
+                description: 'Text description of the image to generate. Include style details (e.g., "photorealistic", "oil painting"), aspect ratio (e.g., "square image", "landscape"), and composition details directly in the prompt.',
               },
               save_to_file: {
                 type: 'boolean',
-                description: 'Save generated images to local files',
+                description: 'Save generated image to local file',
                 default: false,
               },
               filename: {
                 type: 'string',
-                description: 'Base filename for saved images (without extension)',
+                description: 'Base filename for saved image (without extension)',
               },
               show_full_response: {
                 type: 'boolean',
@@ -147,42 +92,8 @@ class OpenRouterImageServer {
           },
         },
         {
-          name: 'analyze_image',
-          description: 'Analyze images using vision models through OpenRouter API',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              model: {
-                type: 'string',
-                description: 'Model ID for image analysis',
-                enum: ['anthropic/claude-3.5-sonnet', 'openai/gpt-4-vision-preview'],
-                default: 'anthropic/claude-3.5-sonnet',
-              },
-              image_url: {
-                type: 'string',
-                description: 'URL of the image to analyze',
-              },
-              image_path: {
-                type: 'string',
-                description: 'Local file path of the image to analyze',
-              },
-              prompt: {
-                type: 'string',
-                description: 'Question or prompt about the image',
-                default: 'What is in this image?',
-              },
-              max_tokens: {
-                type: 'number',
-                description: 'Maximum tokens in response',
-                default: 1000,
-              },
-            },
-            required: ['prompt'],
-          },
-        },
-        {
           name: 'list_models',
-          description: 'List available image generation and vision models',
+          description: 'Show information about the Gemini image generation model',
           inputSchema: {
             type: 'object',
             properties: {},
@@ -209,8 +120,6 @@ class OpenRouterImageServer {
       switch (name) {
         case 'generate_image':
           return await this.handleGenerateImage(args as unknown as ImageGenerationArgs);
-        case 'analyze_image':
-          return await this.handleAnalyzeImage(args as unknown as ImageAnalysisArgs);
         case 'list_models':
           return await this.handleListModels();
         default:
@@ -221,346 +130,164 @@ class OpenRouterImageServer {
 
   private async handleGenerateImage(args: ImageGenerationArgs) {
     const { 
-      model = 'google/gemini-2.5-flash-image-preview:free', 
       prompt, 
-      n = 1, 
-      size = '1024x1024',
-      quality = 'standard',
-      style = 'vivid',
       save_to_file = false,
       filename,
       show_full_response = false
     } = args;
 
     try {
-      // For Gemini models, use chat completions endpoint with image generation prompt
-      if (model.includes('gemini')) {
-        const imagePrompt = `Generate an ultra-realistic 4K photo: ${prompt}`;
-        
-        const response = await fetch(`${OPENROUTER_API_URL}/chat/completions`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${this.apiKey}`,
-            'Content-Type': 'application/json',
-            'HTTP-Referer': 'https://github.com/openrouter-image-gen-mcp',
-            'X-Title': 'OpenRouter Image Generation MCP Server',
-          },
-          body: JSON.stringify({
-            model,
-            messages: [
-              {
-                role: 'user',
-                content: imagePrompt
-              }
-            ],
-            temperature: 0.7,
-            max_tokens: 4096
-          }),
-        });
-
-        if (!response.ok) {
-          const errorText = await response.text();
-          if (response.status === 401) {
-            throw new Error(`Authentication failed (401): Invalid API key. Please check your OPENROUTER_API_KEY. Error: ${errorText}`);
-          } else if (response.status === 403) {
-            throw new Error(`Access denied (403): Your API key may not have access to this model. Error: ${errorText}`);
-          }
-          throw new Error(`OpenRouter API error: ${response.status} - ${errorText}`);
-        }
-
-        const data = await response.json() as any;
-        const message = data.choices[0].message;
-        const content = message.content || '';
-        
-        // Extract image URL from the response
-        let imageUrl: string | null = null;
-        
-        // Check if the message has images array (Gemini format)
-        if (message.images && message.images.length > 0) {
-          const firstImage = message.images[0];
-          if (firstImage.image_url && firstImage.image_url.url) {
-            imageUrl = firstImage.image_url.url;
-          }
-        }
-        // Fallback: Check if content is a URL
-        else if (content.startsWith('http')) {
-          imageUrl = content;
-        } else if (content.startsWith('data:image')) {
-          // It's base64 data
-          imageUrl = content;
-        } else if (content.includes('http') || content.includes('![')) {
-          // Try to extract URL from markdown
-          const markdownMatch = content.match(/!\[.*?\]\((https?:\/\/[^\s\)]+)\)/);
-          if (markdownMatch) {
-            imageUrl = markdownMatch[1];
-          } else {
-            const urlMatch = content.match(/https?:\/\/[^\s]+/);
-            if (urlMatch) {
-              imageUrl = urlMatch[0];
-            }
-          }
-        }
-        
-        let savedFile: string | null = null;
-        if (save_to_file && imageUrl) {
-          // Handle both regular URLs and base64 data
-          const imageInput: ImageInput = imageUrl.startsWith('data:') || imageUrl.startsWith('http') 
-            ? { url: imageUrl }
-            : { base64: imageUrl }; // Assume it's raw base64 if not a URL
-          const savedFiles = await this.saveImages([imageInput], filename || 'generated_image');
-          savedFile = savedFiles[0] || null;
-        }
-
-        // Prepare response based on show_full_response option
-        const responseData: any = {
-          success: true,
-          model: model,
-          prompt: prompt,
-          message: content || 'Image generated successfully',
-        };
-
-        // Add image info
-        if (imageUrl) {
-          if (imageUrl.startsWith('data:image')) {
-            if (show_full_response) {
-              // Include full base64 data when requested
-              responseData.image = {
-                type: 'base64',
-                data: imageUrl,
-                size: `${Math.round(imageUrl.length / 1024)}KB`,
-                format: imageUrl.substring(11, imageUrl.indexOf(';')) || 'unknown'
-              };
-            } else {
-              // Default: concise info without the actual data
-              responseData.image = {
-                type: 'base64',
-                size: `${Math.round(imageUrl.length / 1024)}KB`,
-                format: imageUrl.substring(11, imageUrl.indexOf(';')) || 'unknown'
-              };
-            }
-          } else {
-            responseData.image = {
-              type: 'url',
-              url: imageUrl
-            };
-          }
-        }
-
-        if (savedFile) {
-          responseData.saved_to = savedFile;
-        }
-
-        responseData.usage = {
-          tokens: data.usage?.total_tokens || 0,
-          model: data.model
-        };
-
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(responseData, null, 2),
-            },
-          ],
-        };
-      } 
-      // For DALL-E models, use the images/generations endpoint
-      else if (model.includes('dall-e')) {
-        const requestBody: any = {
-          model,
-          prompt,
-          n,
-          size,
-          quality,
-          style,
-        };
-
-        const response = await fetch(`${OPENROUTER_API_URL}/images/generations`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${this.apiKey}`,
-            'Content-Type': 'application/json',
-            'HTTP-Referer': 'https://github.com/openrouter-image-gen-mcp',
-            'X-Title': 'OpenRouter Image Generation MCP Server',
-          },
-          body: JSON.stringify(requestBody),
-        });
-
-        if (!response.ok) {
-          const errorText = await response.text();
-          if (response.status === 401) {
-            throw new Error(`Authentication failed (401): Invalid API key. Please check your OPENROUTER_API_KEY. Error: ${errorText}`);
-          } else if (response.status === 403) {
-            throw new Error(`Access denied (403): Your API key may not have access to this model. Error: ${errorText}`);
-          }
-          throw new Error(`OpenRouter API error: ${response.status} - ${errorText}`);
-        }
-
-        const data = await response.json() as any;
-        
-        let savedFiles: string[] = [];
-        if (save_to_file && data.data) {
-          // Convert DALL-E response to ImageInput format
-          const imageInputs: ImageInput[] = data.data.map((img: any) => {
-            if (img.b64_json) {
-              return { b64_json: img.b64_json };
-            } else if (img.url) {
-              return { url: img.url };
-            }
-            return {};
-          });
-          savedFiles = await this.saveImages(imageInputs, filename || 'generated_image');
-        }
-
-        // Prepare response for DALL-E based on show_full_response option
-        const responseData: any = {
-          success: true,
-          model: model,
-          prompt: prompt,
-          images_generated: data.data.length,
-          images: []
-        };
-
-        data.data.forEach((img: any, index: number) => {
-          const imageInfo: any = {
-            index: index + 1,
-          };
-
-          if (img.revised_prompt) {
-            imageInfo.revised_prompt = img.revised_prompt;
-          }
-
-          if (img.b64_json) {
-            imageInfo.type = 'base64';
-            imageInfo.size = `${Math.round(img.b64_json.length / 1024)}KB`;
-            // Include full base64 data only when requested
-            if (show_full_response) {
-              imageInfo.data = `data:image/png;base64,${img.b64_json}`;
-            }
-          } else if (img.url) {
-            imageInfo.type = 'url';
-            imageInfo.url = img.url;
-          }
-
-          if (savedFiles[index]) {
-            imageInfo.saved_to = savedFiles[index];
-          }
-
-          responseData.images.push(imageInfo);
-        });
-
-        if (data.usage) {
-          responseData.usage = {
-            tokens: data.usage.total_tokens || 0
-          };
-        }
-
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(responseData, null, 2),
-            },
-          ],
-        };
-      } else {
-        throw new Error(`Unsupported model for image generation: ${model}`);
-      }
-    } catch (error: any) {
-      throw new Error(`Failed to generate image: ${error.message}`);
-    }
-  }
-
-  private async handleAnalyzeImage(args: ImageAnalysisArgs) {
-    const { model = 'anthropic/claude-3.5-sonnet', image_url, image_path, prompt, max_tokens = 1000 } = args;
-
-    let imageData: string;
-    let mimeType: string = 'image/jpeg';
-
-    if (image_path) {
-      const buffer = await fs.readFile(image_path);
-      imageData = buffer.toString('base64');
-      const ext = path.extname(image_path).toLowerCase();
-      if (ext === '.png') mimeType = 'image/png';
-      else if (ext === '.gif') mimeType = 'image/gif';
-      else if (ext === '.webp') mimeType = 'image/webp';
-    } else if (image_url) {
-      imageData = image_url;
-    } else {
-      throw new Error('Either image_url or image_path must be provided');
-    }
-
-    const messages = [
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'text',
-            text: prompt,
-          },
-          {
-            type: 'image_url',
-            image_url: {
-              url: image_path ? `data:${mimeType};base64,${imageData}` : imageData,
-            },
-          },
-        ],
-      },
-    ];
-
-    try {
+      // Use Gemini's generateContent endpoint for image generation
       const response = await fetch(`${OPENROUTER_API_URL}/chat/completions`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${this.apiKey}`,
           'Content-Type': 'application/json',
-          'HTTP-Referer': 'https://github.com/openrouter-image-gen-mcp',
-          'X-Title': 'OpenRouter Image Generation MCP Server',
+          'HTTP-Referer': 'https://github.com/gemini-image-gen-mcp',
+          'X-Title': 'Gemini Image Generation MCP Server',
         },
         body: JSON.stringify({
-          model,
-          messages,
-          max_tokens,
+          model: GEMINI_MODEL,
+          messages: [
+            {
+              role: 'user',
+              content: prompt
+            }
+          ],
         }),
       });
 
       if (!response.ok) {
-        const error = await response.text();
-        throw new Error(`OpenRouter API error: ${response.status} - ${error}`);
+        const errorText = await response.text();
+        if (response.status === 401) {
+          throw new Error(`Authentication failed (401): Invalid API key. Please check your OPENROUTER_API_KEY. Error: ${errorText}`);
+        } else if (response.status === 403) {
+          throw new Error(`Access denied (403): Your API key may not have access to this model. Error: ${errorText}`);
+        }
+        throw new Error(`OpenRouter API error: ${response.status} - ${errorText}`);
       }
 
       const data = await response.json() as any;
+      const message = data.choices[0].message;
+      const content = message.content || '';
       
+      // Extract image URL from the response
+      let imageUrl: string | null = null;
+      
+      // Check if the message has images array (Gemini format)
+      if (message.images && message.images.length > 0) {
+        const firstImage = message.images[0];
+        if (firstImage.image_url && firstImage.image_url.url) {
+          imageUrl = firstImage.image_url.url;
+        }
+      }
+      // Fallback: Check if content is a URL
+      else if (content.startsWith('http')) {
+        imageUrl = content;
+      } else if (content.startsWith('data:image')) {
+        // It's base64 data
+        imageUrl = content;
+      } else if (content.includes('http') || content.includes('![')) {
+        // Try to extract URL from markdown
+        const markdownMatch = content.match(/!\[.*?\]\((https?:\/\/[^\s\)]+)\)/);
+        if (markdownMatch) {
+          imageUrl = markdownMatch[1];
+        } else {
+          const urlMatch = content.match(/https?:\/\/[^\s]+/);
+          if (urlMatch) {
+            imageUrl = urlMatch[0];
+          }
+        }
+      }
+      
+      let savedFile: string | null = null;
+      if (save_to_file && imageUrl) {
+        // Handle both regular URLs and base64 data
+        const imageInput: ImageInput = imageUrl.startsWith('data:') || imageUrl.startsWith('http') 
+          ? { url: imageUrl }
+          : { base64: imageUrl }; // Assume it's raw base64 if not a URL
+        const savedFiles = await this.saveImages([imageInput], filename || 'generated_image');
+        savedFile = savedFiles[0] || null;
+      }
+
+      // Prepare response based on show_full_response option
+      const responseData: any = {
+        success: true,
+        model: GEMINI_MODEL,
+        prompt: prompt,
+        message: content || 'Image generated successfully',
+      };
+
+      // Add image info
+      if (imageUrl) {
+        if (imageUrl.startsWith('data:image')) {
+          if (show_full_response) {
+            // Include full base64 data when requested
+            responseData.image = {
+              type: 'base64',
+              data: imageUrl,
+              size: `${Math.round(imageUrl.length / 1024)}KB`,
+              format: imageUrl.substring(11, imageUrl.indexOf(';')) || 'unknown'
+            };
+          } else {
+            // Default: concise info without the actual data
+            responseData.image = {
+              type: 'base64',
+              size: `${Math.round(imageUrl.length / 1024)}KB`,
+              format: imageUrl.substring(11, imageUrl.indexOf(';')) || 'unknown'
+            };
+          }
+        } else {
+          responseData.image = {
+            type: 'url',
+            url: imageUrl
+          };
+        }
+      }
+
+      if (savedFile) {
+        responseData.saved_to = savedFile;
+      }
+
+      if (data.usage) {
+        responseData.usage = {
+          tokens: data.usage?.total_tokens || 0
+        };
+      }
+
       return {
         content: [
           {
             type: 'text',
-            text: data.choices[0].message.content,
+            text: JSON.stringify(responseData, null, 2),
           },
         ],
-        metadata: {
-          usage: data.usage,
-          model: data.model,
-          id: data.id,
-        },
       };
     } catch (error: any) {
-      throw new Error(`Failed to analyze image: ${error.message}`);
+      throw new Error(`Failed to generate image: ${error.message}`);
     }
   }
 
   private async handleListModels() {
-    const modelList = AVAILABLE_MODELS.map(m => 
-      `• ${m.id}\n  ${m.name} - ${m.description}`
-    ).join('\n\n');
-
-    const sizeList = IMAGE_SIZES.join(', ');
-
     return {
       content: [
         {
           type: 'text',
-          text: `Available Image Generation Models:\n${modelList}\n\nSupported Image Sizes:\n${sizeList}`,
+          text: `Available Gemini Image Generation Model:
+• ${GEMINI_MODEL}
+  Google Gemini 2.0 Flash Experimental - Advanced image generation model
+
+Note: Image style, aspect ratio, and composition are controlled through descriptive text in your prompt.
+
+Examples:
+• For multiple images: "Generate 3 variations of..." (note: model may not always follow exact count)
+• For square images: Include "square image" in your prompt
+• For landscape: Include "landscape orientation" or "16:9 aspect ratio"
+• For portrait: Include "portrait orientation" or "9:16 aspect ratio"
+• For specific styles: "photorealistic", "oil painting", "watercolor", "digital art", etc.
+• For quality: "ultra HD", "4K", "highly detailed", etc.
+
+The model interprets your natural language description to generate images matching your requirements.`,
         },
       ],
     };
@@ -681,9 +408,9 @@ class OpenRouterImageServer {
   async run() {
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
-    console.error('OpenRouter Image Generation MCP Server running on stdio');
+    console.error('Gemini Image Generation MCP Server running on stdio');
   }
 }
 
-const server = new OpenRouterImageServer();
+const server = new GeminiImageServer();
 server.run().catch(console.error);
